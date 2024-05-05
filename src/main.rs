@@ -1,18 +1,20 @@
+mod cpu;
+
 use wgpu::{
     util::DeviceExt, BufferUsages, CommandEncoderDescriptor, DeviceDescriptor, Features, Instance,
     InstanceDescriptor, Limits, PipelineCompilationOptions, RequestAdapterOptions,
 };
 
-use std::{mem::size_of, num::NonZeroU64};
+use std::{mem::size_of, num::NonZeroU64, time::Instant};
 
 fn main() {
+    cpu::run();
     pollster::block_on(run());
 }
 
-const SIZE: usize = 64;
+const SIZE: usize = 1024 * 256;
 
 async fn run() {
-    let input = [314f32; SIZE];
     // Set up surface
     let instance = Instance::new(InstanceDescriptor::default());
     let adapter = instance
@@ -105,7 +107,9 @@ async fn run() {
     });
     let mut stride = 2;
 
-    while stride <= input.len() {
+    let start = Instant::now();
+
+    while stride <= SIZE {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -114,7 +118,7 @@ async fn run() {
             });
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_pipeline(&compute_pipeline);
-            pass.dispatch_workgroups((input.len() / stride) as u32, 1, 1);
+            pass.dispatch_workgroups(((SIZE / stride / 256) as u32).max(1), 1, 1);
         }
 
         encoder.copy_buffer_to_buffer(
@@ -122,33 +126,35 @@ async fn run() {
             0,
             &output_buffer,
             0,
-            (input.len() * size_of::<f32>()) as wgpu::BufferAddress,
+            (SIZE * size_of::<f32>()) as wgpu::BufferAddress,
         );
         queue.write_buffer(&stride_buffer, 0, bytemuck::cast_slice(&[stride as u32]));
         queue.submit(Some(encoder.finish()));
 
-        let buffer_slice = output_buffer.slice(..);
-
-        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
-        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).unwrap();
-        });
-        device.poll(wgpu::Maintain::Wait);
-        rx.receive().await.unwrap().unwrap();
-        let data = buffer_slice
-            .get_mapped_range()
-            .as_ref()
-            .chunks_exact(4)
-            .map(|b| f32::from_ne_bytes(b.try_into().unwrap()))
-            .collect::<Vec<_>>();
-        print!("after stride {stride}: ");
-        for number in data {
-            print!("{} ", number as u32);
-        }
-        println!();
-
-        output_buffer.unmap();
-
         stride *= 2;
     }
+    let buffer_slice = output_buffer.slice(..);
+
+    let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+    buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+        tx.send(result).unwrap();
+    });
+    device.poll(wgpu::Maintain::Wait);
+    rx.receive().await.unwrap().unwrap();
+    let data = buffer_slice
+        .get_mapped_range()
+        .as_ref()
+        .chunks_exact(4)
+        .map(|b| f32::from_ne_bytes(b.try_into().unwrap()))
+        .collect::<Vec<_>>();
+
+    output_buffer.unmap();
+
+    println!("total sum took {:?}", start.elapsed());
+    println!("the total value is {:?}", data.last().unwrap());
+
+    //    for number in data {
+    //        print!("{} ", number as u32);
+    //    }
+    //    println!();
 }
