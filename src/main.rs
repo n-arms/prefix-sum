@@ -56,6 +56,16 @@ async fn run() {
                 },
                 count: None,
             },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                },
+                count: None,
+            },
         ],
     });
 
@@ -71,10 +81,21 @@ async fn run() {
         usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
     });
 
-    let stride_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Stride Buffer"),
+    let current_stride_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Current Stride Buffer"),
         contents: bytemuck::cast_slice(&[2u32]),
         usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+    });
+
+    let mut strides = Vec::new();
+    for i in 1..30 {
+        strides.push(1u32 << i);
+    }
+
+    let stride_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Stride Buffer"),
+        contents: bytemuck::cast_slice(&strides),
+        usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
     });
 
     let shader = device.create_shader_module(wgpu::include_wgsl!("./shader.wgsl"));
@@ -101,16 +122,32 @@ async fn run() {
             },
             wgpu::BindGroupEntry {
                 binding: 1,
+                resource: current_stride_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
                 resource: stride_buffer.as_entire_binding(),
             },
         ],
     });
-    let mut stride = 2;
+    let mut stride_index = 0;
 
     let start = Instant::now();
+    let mut actions = Vec::new();
 
-    while stride <= SIZE {
+    loop {
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+        let stride = 1 << stride_index;
+        if stride >= SIZE {
+            break;
+        }
+        encoder.copy_buffer_to_buffer(
+            &stride_buffer,
+            4 * stride_index,
+            &current_stride_buffer,
+            0,
+            4,
+        );
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -120,7 +157,6 @@ async fn run() {
             pass.set_pipeline(&compute_pipeline);
             pass.dispatch_workgroups(((SIZE / stride / 256) as u32).max(1), 1, 1);
         }
-
         encoder.copy_buffer_to_buffer(
             &input_buffer,
             0,
@@ -128,11 +164,39 @@ async fn run() {
             0,
             (SIZE * size_of::<f32>()) as wgpu::BufferAddress,
         );
-        queue.write_buffer(&stride_buffer, 0, bytemuck::cast_slice(&[stride as u32]));
-        queue.submit(Some(encoder.finish()));
+        actions.push(encoder.finish());
 
-        stride *= 2;
+        stride_index += 1;
     }
+
+    queue.submit(actions);
+
+    //
+    //    while stride <= SIZE {
+    //        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+    //        {
+    //            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+    //                label: None,
+    //                timestamp_writes: None,
+    //            });
+    //            pass.set_bind_group(0, &bind_group, &[]);
+    //            pass.set_pipeline(&compute_pipeline);
+    //            pass.dispatch_workgroups(((SIZE / stride / 256) as u32).max(1), 1, 1);
+    //        }
+    //
+    //        encoder.copy_buffer_to_buffer(
+    //            &input_buffer,
+    //            0,
+    //            &output_buffer,
+    //            0,
+    //            (SIZE * size_of::<f32>()) as wgpu::BufferAddress,
+    //        );
+    //        queue.write_buffer(&stride_buffer, 0, bytemuck::cast_slice(&[stride as u32]));
+    //        queue.submit(Some(encoder.finish()));
+    //
+    //        stride *= 2;
+    //    }
+
     let buffer_slice = output_buffer.slice(..);
 
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
