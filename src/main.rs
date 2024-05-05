@@ -134,13 +134,14 @@ async fn run() {
             tx.send(result).unwrap();
         });
         device.poll(wgpu::Maintain::Wait);
-        pollster::block_on(rx.receive()).unwrap().unwrap();
+        rx.receive().await.unwrap().unwrap();
         let data = buffer_slice
             .get_mapped_range()
             .as_ref()
             .chunks_exact(4)
             .map(|b| f32::from_ne_bytes(b.try_into().unwrap()))
             .collect::<Vec<_>>();
+        print!("after stride {stride}: ");
         for number in data {
             print!("{} ", number as u32);
         }
