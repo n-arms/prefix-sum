@@ -7,13 +7,13 @@ var<storage, read_write> data: array<f32>;
 var<storage, read_write> sums: array<f32>;
 
 
-const wgsize: u32 = 4;
+const wgsize: u32 = 64;
 const n: u32 = wgsize * 2;
 
 var<workgroup> shared_data: array<f32, n>;
 
 @compute
-@workgroup_size(4)
+@workgroup_size(64)
 fn scan_main(
     @builtin(global_invocation_id) global_id: vec3<u32>, 
     @builtin(local_invocation_id) local_id: vec3<u32>,
@@ -58,7 +58,7 @@ fn scan_main(
 }
 
 @compute
-@workgroup_size(4)
+@workgroup_size(64)
 fn add_main(
     @builtin(global_invocation_id) global_id: vec3<u32>, 
     @builtin(local_invocation_id) local_id: vec3<u32>,

@@ -12,7 +12,7 @@ fn main() {
     pollster::block_on(run());
 }
 
-const SIZE: usize = 512 * 512;
+const SIZE: usize = 256 * 256;
 
 async fn run() {
     // Set up surface
@@ -24,7 +24,19 @@ async fn run() {
 
     let state = State::new(&adapter).await;
     let buffer = state.ones_buffer(SIZE);
+    let start = Instant::now();
     state.scan(&buffer, SIZE as u32).await;
+    println!("gpu compute took {:?}", start.elapsed());
+
+    let data = load_buffer(
+        &buffer,
+        &state.debug_buffer,
+        SIZE,
+        &state.device,
+        &state.queue,
+    )
+    .await;
+    println!("\t={}", data.last().unwrap());
 }
 
 struct State {
@@ -117,10 +129,21 @@ impl State {
         }
     }
 
-    #[async_recursion::async_recursion]
     async fn scan(&self, to_scan: &wgpu::Buffer, size: u32) {
-        let elements_per_workgroup = 4 * 2;
-        let workgroups = (size / elements_per_workgroup).max(1);
+        let mut commands = Vec::new();
+        self.scan_into(to_scan, size, &mut commands).await;
+        self.queue.submit(commands);
+    }
+
+    #[async_recursion::async_recursion]
+    async fn scan_into(
+        &self,
+        to_scan: &wgpu::Buffer,
+        size: u32,
+        to_execute: &mut Vec<wgpu::CommandBuffer>,
+    ) {
+        let elements_per_workgroup = 64 * 2;
+        let workgroups = ((size as f32 / elements_per_workgroup as f32).ceil() as u32).max(1);
         let sums = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -155,19 +178,10 @@ impl State {
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
 
-        self.queue.submit([encoder.finish()]);
-        let data = load_buffer(
-            to_scan,
-            &self.debug_buffer,
-            size as usize,
-            &self.device,
-            &self.queue,
-        )
-        .await;
-        print_data(data);
+        to_execute.push(encoder.finish());
 
         if workgroups > 1 {
-            self.scan(&sums, workgroups).await;
+            self.scan_into(&sums, workgroups, to_execute).await;
 
             let mut encoder = self
                 .device
@@ -182,22 +196,8 @@ impl State {
                 pass.dispatch_workgroups(workgroups, 1, 1);
             }
 
-            self.queue.submit([encoder.finish()]);
+            to_execute.push(encoder.finish());
         }
-
-        if size == SIZE as u32 {
-            let data = load_buffer(
-                to_scan,
-                &self.debug_buffer,
-                size as usize,
-                &self.device,
-                &self.queue,
-            )
-            .await;
-            print_data(data);
-        }
-
-        //print_data(load_buffer(&sums, &self.debug_buffer, 2, &self.device, &self.queue).await);
     }
 
     fn ones_buffer(&self, size: usize) -> wgpu::Buffer {
