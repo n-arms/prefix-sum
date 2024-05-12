@@ -133,6 +133,17 @@ async fn run() {
 
         stride *= 2;
     }
+    println!("gpu compute took {:?}", start.elapsed());
+    let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
+
+    encoder.copy_buffer_to_buffer(
+        &input_buffer,
+        0,
+        &output_buffer,
+        0,
+        (SIZE * size_of::<f32>()) as wgpu::BufferAddress,
+    );
+    queue.submit(Some(encoder.finish()));
     let buffer_slice = output_buffer.slice(..);
 
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
@@ -150,11 +161,6 @@ async fn run() {
 
     output_buffer.unmap();
 
-    println!("total sum took {:?}", start.elapsed());
-    println!("the total value is {:?}", data.last().unwrap());
-
-    //    for number in data {
-    //        print!("{} ", number as u32);
-    //    }
-    //    println!();
+    println!("gpu sum took {:?}", start.elapsed());
+    println!("\t= {:?}", data.last().unwrap());
 }
