@@ -12,7 +12,7 @@ fn main() {
     pollster::block_on(run());
 }
 
-const SIZE: usize = 1024 * 256;
+const SIZE: usize = 256 * 256 * 4;
 
 async fn run() {
     // Set up surface
@@ -50,7 +50,7 @@ async fn run() {
                 binding: 1,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: false,
                     min_binding_size: Some(NonZeroU64::new(4).unwrap()),
                 },
@@ -59,9 +59,15 @@ async fn run() {
         ],
     });
 
-    let input_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("Input Compute Buffer"),
+    let buffer1 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Compute Buffer 1"),
         contents: bytemuck::cast_slice(&[1f32; SIZE]),
+        usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
+    });
+
+    let buffer2 = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Compute Buffer 2"),
+        contents: bytemuck::cast_slice(&[0f32; SIZE]),
         usage: BufferUsages::COPY_SRC | BufferUsages::COPY_DST | BufferUsages::STORAGE,
     });
 
@@ -91,60 +97,106 @@ async fn run() {
         compilation_options: PipelineCompilationOptions::default(),
     });
 
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    let bind_group1to2 = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Bind Group"),
         layout: &bind_group_layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: input_buffer.as_entire_binding(),
+                resource: buffer1.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: stride_buffer.as_entire_binding(),
+                resource: buffer2.as_entire_binding(),
             },
         ],
     });
-    let mut stride = 2;
+
+    let bind_group2to1 = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Bind Group"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffer1.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer2.as_entire_binding(),
+            },
+        ],
+    });
 
     let start = Instant::now();
 
-    while stride <= SIZE {
+    let mut elements = SIZE;
+
+    let mut buffer1input = true;
+
+    let elements_per_workgroup = 256 * 2;
+
+    let mut commands = Vec::new();
+
+    while elements / 2 > 0 {
+        let workgroups = (elements as u32 / elements_per_workgroup).max(1);
         let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
                 timestamp_writes: None,
             });
+            let bind_group = if buffer1input {
+                &bind_group1to2
+            } else {
+                &bind_group2to1
+            };
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_pipeline(&compute_pipeline);
-            pass.dispatch_workgroups(((SIZE / stride / 256) as u32).max(1), 1, 1);
+            pass.dispatch_workgroups(workgroups, 1, 1);
         }
-
-        encoder.copy_buffer_to_buffer(
-            &input_buffer,
-            0,
-            &output_buffer,
-            0,
-            (SIZE * size_of::<f32>()) as wgpu::BufferAddress,
-        );
-        queue.write_buffer(&stride_buffer, 0, bytemuck::cast_slice(&[stride as u32]));
-        queue.submit(Some(encoder.finish()));
-
-        stride *= 2;
+        commands.push(encoder.finish());
+        elements /= elements_per_workgroup as usize;
+        buffer1input = !buffer1input;
     }
-    println!("gpu compute took {:?}", start.elapsed());
+    queue.submit(commands);
+    println!("gpu sum took {:?}", start.elapsed());
+    let data = load_buffer(
+        if buffer1input { &buffer1 } else { &buffer2 },
+        &output_buffer,
+        1,
+        &device,
+        &queue,
+    )
+    .await
+    .first()
+    .copied()
+    .unwrap();
+    println!("\t= {data}");
+}
+
+async fn clear_buffer(buffer: &wgpu::Buffer, length: usize, queue: &wgpu::Queue) {
+    queue.write_buffer(buffer, 0, &vec![0u8; length * 4]);
+    queue.submit([]);
+}
+
+async fn load_buffer(
+    source: &wgpu::Buffer,
+    temp: &wgpu::Buffer,
+    elements: usize,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> Vec<f32> {
     let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor { label: None });
 
     encoder.copy_buffer_to_buffer(
-        &input_buffer,
+        source,
         0,
-        &output_buffer,
+        temp,
         0,
-        (SIZE * size_of::<f32>()) as wgpu::BufferAddress,
+        (elements * size_of::<f32>()) as wgpu::BufferAddress,
     );
     queue.submit(Some(encoder.finish()));
-    let buffer_slice = output_buffer.slice(..);
+    let buffer_slice = temp.slice(..);
 
     let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
     buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
@@ -159,8 +211,14 @@ async fn run() {
         .map(|b| f32::from_ne_bytes(b.try_into().unwrap()))
         .collect::<Vec<_>>();
 
-    output_buffer.unmap();
+    temp.unmap();
 
-    println!("gpu sum took {:?}", start.elapsed());
-    println!("\t= {:?}", data.last().unwrap());
+    data
+}
+
+fn print_data(data: Vec<f32>) {
+    for elem in data {
+        print!("{} ", elem);
+    }
+    println!();
 }
