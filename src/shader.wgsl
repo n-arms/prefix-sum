@@ -264,7 +264,7 @@ fn main(
         }
     }
 
-    scan_blelloch(block, local_id.x, prefix);
+    scan_hillis_steele(block, local_id.x, prefix);
 
     workgroupBarrier();
 }

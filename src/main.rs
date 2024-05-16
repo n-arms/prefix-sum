@@ -243,10 +243,11 @@ impl State {
     }
 
     fn ones_buffer(&self, size: usize) -> wgpu::Buffer {
+        let data: Vec<_> = (1..size + 1).map(|x| x as f32).collect();
         self.device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
-                contents: bytemuck::cast_slice(&vec![1f32; size]),
+                contents: bytemuck::cast_slice(&data),
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             })
     }
