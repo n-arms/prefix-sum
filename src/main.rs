@@ -13,7 +13,7 @@ fn main() {
     pollster::block_on(run());
 }
 
-const SIZE: usize = 1024;
+const SIZE: usize = 16;
 
 async fn run() {
     // Set up surface

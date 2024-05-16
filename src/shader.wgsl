@@ -143,7 +143,35 @@ fn lookback(block: u32, tid: u32) {
     }
 }
 
-fn scan(block: u32, tid: u32, prefix: f32) {
+// a simple and minimal depth algorithm
+fn scan_hillis_steele(block: u32, tid: u32, prefix: f32) {
+    let start = block * n;
+
+    var value: f32;
+
+    if (tid == 0) {
+        value = 0.0;
+    } else {
+        value = data[start + 2*tid - 1];
+    }
+
+    shared_data[2*tid] = value;
+    shared_data[2*tid + 1] = data[start + 2*tid];
+
+    for (var d: u32 = 1; d < n; d = d * 2) {
+        workgroupBarrier();
+        if (tid >= d) {
+            shared_data[2*tid] += shared_data[2*tid - d];
+            shared_data[2*tid + 1] += shared_data[2*tid + 1 - d];
+        }
+    }
+    workgroupBarrier();
+    data[start + 2*tid] = shared_data[2*tid] + prefix;
+    data[start + 2*tid + 1] = shared_data[2*tid + 1] + prefix;
+}
+
+// a work efficient algorithm
+fn scan_blelloch(block: u32, tid: u32, prefix: f32) {
     let start = block * n;
     var offset: u32 = 1;
 
@@ -236,7 +264,7 @@ fn main(
         }
     }
 
-    scan(block, local_id.x, prefix);
+    scan_blelloch(block, local_id.x, prefix);
 
     workgroupBarrier();
 }
